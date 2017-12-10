@@ -59,6 +59,21 @@ module.exports = ({ db, botfile, projectLocation, logger }) => {
     return categories
   }
 
+  const getCategorySchema = async categoryId => {
+    const category = _.find(categories, { id: categoryId })
+    if (_.isNil(category)) {
+      return null
+    }
+
+    return {
+      json: category.jsonSchema,
+      ui: category.uiSchema,
+      title: category.title,
+      description: category.description,
+      ummBloc: category.ummBloc
+    }
+  }
+
   const listAvailableCategories = async () => {
     const knex = await db.get()
 
@@ -74,24 +89,10 @@ module.exports = ({ db, botfile, projectLocation, logger }) => {
         id: category.id,
         title: category.title,
         description: category.description,
-        count: count
+        count,
+        schema: await getCategorySchema(category.id)
       }
     })
-  }
-
-  const getCategorySchema = async categoryId => {
-    const category = _.find(categories, { id: categoryId })
-    if (_.isNil(category)) {
-      return null
-    }
-
-    return {
-      json: category.jsonSchema,
-      ui: category.uiSchema,
-      title: category.title,
-      description: category.description,
-      ummBloc: category.ummBloc
-    }
   }
 
   const createOrUpdateCategoryItem = async ({ itemId, categoryId, formData }) => {
@@ -172,7 +173,7 @@ module.exports = ({ db, botfile, projectLocation, logger }) => {
     }
   }
 
-  const listCategoryItems = async (categoryId, from = 0, count = 50, searchTerm) => {
+  const listCategoryItems = async (categoryId, { from = 0, count = 50, searchTerm, orderBy = ['created_on'] }) => {
     const knex = await db.get()
 
     let query = knex('content_items')
@@ -188,12 +189,18 @@ module.exports = ({ db, botfile, projectLocation, logger }) => {
     }
 
     const items = await query
-      .orderBy('created_on')
+      .orderBy(...orderBy)
       .offset(from)
       .limit(count)
       .then()
 
     return items.map(transformCategoryItem)
+  }
+
+  const categoryItemsCount = async () => {
+    const knex = await db.get()
+    const [{ count }] = await knex('content_items').count()
+    return count
   }
 
   const deleteCategoryItems = async ids => {
@@ -282,6 +289,7 @@ module.exports = ({ db, botfile, projectLocation, logger }) => {
 
     createOrUpdateCategoryItem,
     listCategoryItems,
+    categoryItemsCount,
     deleteCategoryItems,
 
     getItem,

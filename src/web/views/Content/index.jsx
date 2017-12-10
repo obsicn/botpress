@@ -1,8 +1,12 @@
 import React, { Component } from 'react'
+import { connect } from 'react-redux'
+import { bindActionCreators } from 'redux'
 import classnames from 'classnames'
 import axios from 'axios'
 import _ from 'lodash'
 import Dropzone from 'react-dropzone'
+
+import { fetchContentCategories, fetchContentMessages, upsertContentMessages, deleteContentMessages } from '~/actions'
 
 import List from './List'
 import Manage from './Manage'
@@ -15,12 +19,11 @@ const style = require('./style.scss')
 
 const MESSAGES_PER_PAGE = 20
 
-export default class ContentView extends Component {
+class ContentView extends Component {
   constructor(props) {
     super(props)
 
     this.state = {
-      loading: true,
       showModal: false,
       modifyId: null,
       selectedId: 'all',
@@ -29,122 +32,48 @@ export default class ContentView extends Component {
   }
 
   componentDidMount() {
+    this.props.fetchContentCategories()
     this.fetchCategoryMessages(this.state.selectedId)
-      .then(::this.fetchCategories)
-      .then(() => {
-        return this.fetchSchema(this.state.selectedId)
-      })
-      .then(() => {
-        this.setState({
-          loading: false
-        })
-      })
-  }
-
-  fetchCategories() {
-    return axios.get('/content/categories').then(({ data }) => {
-      const count =
-        this.state.selectedId === 'all'
-          ? _.sumBy(data, 'count') || 0
-          : _.find(data, { id: this.state.selectedId }).count
-
-      this.setState({
-        categories: data,
-        count: count
-      })
-    })
   }
 
   fetchCategoryMessages(id) {
-    const from = (this.state.page - 1) * MESSAGES_PER_PAGE
-    const count = MESSAGES_PER_PAGE
-
-    return axios
-      .get('/content/categories/' + id + '/items', {
-        params: { from: from, count: count, search: this.state.searchTerm }
-      })
-      .then(({ data }) => {
-        this.setState({
-          messages: data
-        })
-      })
-  }
-
-  fetchSchema(id) {
-    return axios.get('/content/categories/' + id + '/schema').then(({ data }) => {
-      this.setState({
-        schema: data
-      })
+    this.props.fetchContentMessages({
+      id,
+      count: MESSAGES_PER_PAGE,
+      from: (this.state.page - 1) * MESSAGES_PER_PAGE,
+      searchTerm: this.state.searchTerm
     })
   }
 
-  createOrUpdateItem(data) {
-    let url = '/content/categories/' + this.state.selectedId + '/items'
-
-    if (this.state.modifyId) {
-      const categoryId = _.find(this.state.messages, { id: this.state.modifyId }).categoryId
-      url = '/content/categories/' + categoryId + '/items/' + this.state.modifyId
-    }
-
-    return axios.post(url, { formData: data }).then()
-  }
-
-  deleteItems(data) {
-    return axios.post('/content/categories/all/bulk_delete', data).then()
+  currentCategoryId() {
+    return this.state.modifyId
+      ? _.find(this.props.messages, { id: this.state.modifyId }).categoryId
+      : this.state.selectedId
   }
 
   handleToggleModal() {
-    this.setState({
-      showModal: !this.state.showModal,
-      modifyId: null
-    })
+    this.setState({ showModal: !this.state.showModal, modifyId: null })
   }
 
-  handleCreateOrUpdate(data) {
-    this.createOrUpdateItem(data)
-      .then(::this.fetchCategories)
-      .then(() => {
-        return this.fetchCategoryMessages(this.state.selectedId)
-      })
-      .then(() => {
-        this.setState({ showModal: false })
-      })
+  handleUpsert(formData) {
+    const categoryId = this.currentCategoryId()
+    this.props
+      .upsertContentMessages({ categoryId, formData, modifyId: this.state.modifyId })
+      .then(() => this.fetchCategoryMessages(this.state.selectedId))
+      .then(() => this.setState({ showModal: false }))
   }
 
   handleCategorySelected(id) {
     this.fetchCategoryMessages(id)
-      .then(() => {
-        this.setState({ selectedId: id })
-      })
-      .then(() => {
-        this.fetchSchema(id)
-      })
+    this.setState({ selectedId: id })
   }
 
   handleDeleteSelected(ids) {
-    this.deleteItems(ids)
-      .then(::this.fetchCategories)
-      .then(() => {
-        return this.fetchCategoryMessages(this.state.selectedId)
-      })
+    this.props.deleteContentMessages(ids).then(() => this.fetchCategoryMessages(this.state.selectedId))
   }
 
-  handleModalShow(id, categoryId) {
-    const showmodal = () =>
-      setTimeout(() => {
-        this.setState({
-          modifyId: id,
-          showModal: true
-        })
-      }, 250)
-
-    if (!this.state.schema || this.state.selectedId !== categoryId) {
-      this.fetchSchema(categoryId).then(() => {
-        showmodal()
-      })
-    } else {
-      showmodal()
-    }
+  handleModalShow(modifyId, categoryId) {
+    setTimeout(() => this.setState({ modifyId, showModal: true }), 250)
   }
 
   handleRefresh() {
@@ -152,23 +81,13 @@ export default class ContentView extends Component {
   }
 
   handlePrevious() {
-    this.setState({
-      page: this.state.page - 1 || 1
-    })
-
-    setImmediate(() => {
-      this.fetchCategoryMessages(this.state.selectedId)
-    })
+    this.setState({ page: this.state.page - 1 || 1 })
+    setImmediate(() => this.fetchCategoryMessages(this.state.selectedId))
   }
 
   handleNext() {
-    this.setState({
-      page: this.state.page + 1
-    })
-
-    setImmediate(() => {
-      this.fetchCategoryMessages(this.state.selectedId)
-    })
+    this.setState({ page: this.state.page + 1 })
+    setImmediate(() => this.fetchCategoryMessages(this.state.selectedId))
   }
 
   handleUpload() {
@@ -185,41 +104,22 @@ export default class ContentView extends Component {
       Confirm the upload ${acceptedFiles.length} files?`
 
     if (acceptedFiles.length > 0 && confirm(txt) == true) {
-      const formData = new FormData()
-      acceptedFiles.forEach(file => {
-        formData.append('files[]', file)
-      })
-      axios
-        .post('/content/upload', formData, {
-          headers: {
-            'Content-Type': 'multipart/form-data'
-          }
-        })
-        .then(() => {
-          this.fetchCategoryMessages(this.state.selectedId)
-        })
+      let formData = new FormData()
+      acceptedFiles.forEach(file => formData.append('files[]', file))
+
+      const headers = { 'Content-Type': 'multipart/form-data' }
+      axios.post('/content/upload', formData, { headers }).then(() => this.fetchCategoryMessages(this.state.selectedId))
     }
   }
 
   handleSearch(input) {
-    this.setState({
-      searchTerm: input
-    })
-
-    setImmediate(() => {
-      this.fetchCategoryMessages(this.state.selectedId)
-    })
+    this.setState({ searchTerm: input })
+    setImmediate(() => this.fetchCategoryMessages(this.state.selectedId))
   }
 
   render() {
-    if (this.state.loading) {
-      return null
-    }
-
-    const classNames = classnames({
-      [style.content]: true,
-      'bp-content': true
-    })
+    const classNames = classnames({ [style.content]: true, 'bp-content': true })
+    const selectedCategory = _.find(this.props.categories, { id: this.currentCategoryId() })
 
     return (
       <ContentWrapper>
@@ -231,7 +131,7 @@ export default class ContentView extends Component {
             <tr>
               <td style={{ width: '20%' }}>
                 <List
-                  categories={this.state.categories || []}
+                  categories={this.props.categories || []}
                   selectedId={this.state.selectedId || 'all'}
                   handleAdd={::this.handleToggleModal}
                   handleCategorySelected={::this.handleCategorySelected}
@@ -247,9 +147,13 @@ export default class ContentView extends Component {
                 >
                   <Manage
                     page={this.state.page}
-                    count={this.state.count}
+                    count={
+                      this.state.selectedId === 'all'
+                        ? _.sumBy(this.props.categories, 'count') || 0
+                        : _.find(this.props.categories, { id: this.state.selectedId }).count
+                    }
                     messagesPerPage={MESSAGES_PER_PAGE}
-                    messages={this.state.messages || []}
+                    messages={this.props.messages || []}
                     searchTerm={this.state.searchTerm}
                     handlePrevious={::this.handlePrevious}
                     handleNext={::this.handleNext}
@@ -267,13 +171,25 @@ export default class ContentView extends Component {
         </table>
         <CreateModal
           show={this.state.showModal}
-          schema={(this.state.schema && this.state.schema.json) || {}}
-          uiSchema={(this.state.schema && this.state.schema.ui) || {}}
-          formData={this.state.modifyId ? _.find(this.state.messages, { id: this.state.modifyId }).formData : null}
-          handleCreateOrUpdate={::this.handleCreateOrUpdate}
+          schema={(selectedCategory && selectedCategory.schema.json) || {}}
+          uiSchema={(selectedCategory && selectedCategory.schema.ui) || {}}
+          formData={this.state.modifyId ? _.find(this.props.messages, { id: this.state.modifyId }).formData : null}
+          handleCreateOrUpdate={::this.handleUpsert}
           handleClose={::this.handleToggleModal}
         />
       </ContentWrapper>
     )
   }
 }
+
+const mapStateToProps = state => ({
+  categories: state.content.categories,
+  messages: state.content.currentMessages
+})
+const mapDispatchToProps = dispatch =>
+  bindActionCreators(
+    { fetchContentCategories, fetchContentMessages, upsertContentMessages, deleteContentMessages },
+    dispatch
+  )
+
+export default connect(mapStateToProps, mapDispatchToProps)(ContentView)

@@ -6,7 +6,6 @@ import nanoid from 'nanoid'
 import { hashCode } from '~/util'
 
 import {
-  fetchFlows,
   requestFlows,
   requestSaveFlows,
   receiveSaveFlows,
@@ -14,11 +13,8 @@ import {
   switchFlow,
   updateFlow,
   renameFlow,
-  saveFlow,
   updateFlowNode,
-  patchFlowNode,
   switchFlowNode,
-  setDiagramAction,
   createFlowNode,
   copyFlowNode,
   pasteFlowNode,
@@ -42,6 +38,167 @@ const defaultState = {
   currentSnapshotIndex: 0,
   snapshots: [],
   nodeInBuffer: null
+}
+
+function computeFlowsHash(state) {
+  const hashAction = (hash, action) => {
+    if (_.isArray(action)) {
+      action.forEach(c => {
+        if (_.isString(c)) {
+          hash += c
+        } else {
+          hash += c.node
+          hash += c.condition
+        }
+      })
+    } else {
+      hash += 'null'
+    }
+
+    return hash
+  }
+
+  return _.values(state.flowsByName).reduce((obj, curr) => {
+    if (!curr) {
+      return obj
+    }
+
+    let buff = ''
+    buff += curr.name
+    buff += curr.startNode
+
+    if (curr.catchAll) {
+      buff = hashAction(buff, curr.catchAll.onReceive)
+      buff = hashAction(buff, curr.catchAll.onEnter)
+      buff = hashAction(buff, curr.catchAll.next)
+    }
+
+    _.orderBy(curr.nodes, 'id').forEach(node => {
+      buff = hashAction(buff, node.onReceive)
+      buff = hashAction(buff, node.onEnter)
+      buff = hashAction(buff, node.next)
+      buff += node.id
+      buff += node.name
+      buff += node.x
+      buff += node.y
+    })
+
+    _.orderBy(curr.links, l => l.source + l.target).forEach(link => {
+      buff += link.source
+      buff += link.target
+      link.points &&
+        link.points.forEach(p => {
+          buff += p.x
+          buff += p.y
+        })
+    })
+
+    obj[curr.name] = hashCode(buff)
+    return obj
+  }, {})
+}
+
+function updateCurrentHash(state) {
+  return { ...state, currentHashes: computeFlowsHash(state) }
+}
+
+function createSnapshot(state) {
+  const snapshot = {
+    activeFlow: state.currentFlow,
+    activeFlowNode: state.currentFlowNode,
+    flowsByName: Object.assign({}, state.flowsByName)
+  }
+
+  const lastSnapshot = _.head(state.snapshots)
+
+  let snapshots = _.take(state.snapshots, SNAPSHOT_SIZE)
+
+  if (
+    state.currentSnapshotIndex === 0 &&
+    state.snapshots.length > 1 &&
+    lastSnapshot &&
+    snapshot.activeFlow === lastSnapshot.activeFlow &&
+    (!!snapshot.activeFlowNode && snapshot.activeFlowNode === lastSnapshot.activeFlowNode)
+  ) {
+    snapshots = _.drop(snapshots, 1) // We merge the current and last snapshots
+  }
+
+  return {
+    ...state,
+    snapshots: [snapshot, ...snapshots],
+    currentSnapshotIndex: 0
+  }
+}
+
+function applySnapshot(state, snapshot) {
+  return {
+    ...state,
+    currentFlow: snapshot.activeFlow,
+    currentFlowNode: snapshot.activeFlowNode,
+    flowsByName: snapshot.flowsByName
+  }
+}
+
+function copyName(siblingNames, nameToCopy) {
+  let copies = siblingNames.filter(name => name.startsWith(`${nameToCopy}-copy`))
+
+  if (!copies.length) {
+    return `${nameToCopy}-copy`
+  }
+
+  let i = 1
+  while (true) {
+    if (!copies.find(name => name === `${nameToCopy}-copy-${i}`)) {
+      return `${nameToCopy}-copy-${i}`
+    } else {
+      i += 1
+    }
+  }
+}
+
+function doRenameFlow({ flow, name, flows }) {
+  return _.reduce(
+    flows,
+    function(obj, f) {
+      if (f.name === flow) {
+        f.name = name
+        f.location = name
+      }
+
+      if (f.nodes) {
+        let json = JSON.stringify(f.nodes)
+        json = json.replace(flow, name)
+        f.nodes = JSON.parse(json)
+      }
+
+      obj[f.name] = f
+
+      return obj
+    },
+    {}
+  )
+}
+
+function doCreateNewFlow(name) {
+  return {
+    version: '0.1',
+    name: name,
+    location: name,
+    startNode: 'entry',
+    catchAll: {},
+    links: [],
+    nodes: [
+      {
+        id: nanoid(),
+        name: 'entry',
+        onEnter: [],
+        onReceive: null,
+        next: [],
+        x: 100,
+        y: 100
+      }
+    ]
+  }
 }
 
 // *****
@@ -83,12 +240,7 @@ let reducer = handleActions(
         currentFlowNode: null,
         currentFlow: payload
       }
-    },
-
-    [setDiagramAction]: (state, { payload }) => ({
-      ...state,
-      currentDiagramAction: payload
-    })
+    }
   },
   defaultState
 )
@@ -343,105 +495,6 @@ reducer = reduceReducers(
   )
 )
 
-function doRenameFlow({ flow, name, flows }) {
-  return _.reduce(
-    flows,
-    function(obj, f) {
-      if (f.name === flow) {
-        f.name = name
-        f.location = name
-      }
-
-      if (f.nodes) {
-        let json = JSON.stringify(f.nodes)
-        json = json.replace(flow, name)
-        f.nodes = JSON.parse(json)
-      }
-
-      obj[f.name] = f
-
-      return obj
-    },
-    {}
-  )
-}
-
-function doCreateNewFlow(name) {
-  return {
-    version: '0.1',
-    name: name,
-    location: name,
-    startNode: 'entry',
-    catchAll: {},
-    links: [],
-    nodes: [
-      {
-        id: nanoid(),
-        name: 'entry',
-        onEnter: [],
-        onReceive: null,
-        next: [],
-        x: 100,
-        y: 100
-      }
-    ]
-  }
-}
-
-function applySnapshot(state, snapshot) {
-  return {
-    ...state,
-    currentFlow: snapshot.activeFlow,
-    currentFlowNode: snapshot.activeFlowNode,
-    flowsByName: snapshot.flowsByName
-  }
-}
-
-function createSnapshot(state) {
-  const snapshot = {
-    activeFlow: state.currentFlow,
-    activeFlowNode: state.currentFlowNode,
-    flowsByName: Object.assign({}, state.flowsByName)
-  }
-
-  const lastSnapshot = _.head(state.snapshots)
-
-  let snapshots = _.take(state.snapshots, SNAPSHOT_SIZE)
-
-  if (
-    state.currentSnapshotIndex === 0 &&
-    state.snapshots.length > 1 &&
-    lastSnapshot &&
-    snapshot.activeFlow === lastSnapshot.activeFlow &&
-    (!!snapshot.activeFlowNode && snapshot.activeFlowNode === lastSnapshot.activeFlowNode)
-  ) {
-    snapshots = _.drop(snapshots, 1) // We merge the current and last snapshots
-  }
-
-  return {
-    ...state,
-    snapshots: [snapshot, ...snapshots],
-    currentSnapshotIndex: 0
-  }
-}
-
-function copyName(siblingNames, nameToCopy) {
-  let copies = siblingNames.filter(name => name.startsWith(`${nameToCopy}-copy`))
-
-  if (!copies.length) {
-    return `${nameToCopy}-copy`
-  }
-
-  let i = 1
-  while (true) {
-    if (!copies.find(name => name === `${nameToCopy}-copy-${i}`)) {
-      return `${nameToCopy}-copy-${i}`
-    } else {
-      i += 1
-    }
-  }
-}
-
 // *****
 // Reducer that creates the 'initial hash' of flows (for dirty detection)
 // Resets the 'dirty' state when a flow is saved
@@ -475,67 +528,5 @@ reducer = reduceReducers(
     defaultState
   )
 )
-
-function computeFlowsHash(state) {
-  const hashAction = (hash, action) => {
-    if (_.isArray(action)) {
-      action.forEach(c => {
-        if (_.isString(c)) {
-          hash += c
-        } else {
-          hash += c.node
-          hash += c.condition
-        }
-      })
-    } else {
-      hash += 'null'
-    }
-
-    return hash
-  }
-
-  return _.values(state.flowsByName).reduce((obj, curr) => {
-    if (!curr) {
-      return obj
-    }
-
-    let buff = ''
-    buff += curr.name
-    buff += curr.startNode
-
-    if (curr.catchAll) {
-      buff = hashAction(buff, curr.catchAll.onReceive)
-      buff = hashAction(buff, curr.catchAll.onEnter)
-      buff = hashAction(buff, curr.catchAll.next)
-    }
-
-    _.orderBy(curr.nodes, 'id').forEach(node => {
-      buff = hashAction(buff, node.onReceive)
-      buff = hashAction(buff, node.onEnter)
-      buff = hashAction(buff, node.next)
-      buff += node.id
-      buff += node.name
-      buff += node.x
-      buff += node.y
-    })
-
-    _.orderBy(curr.links, l => l.source + l.target).forEach(link => {
-      buff += link.source
-      buff += link.target
-      link.points &&
-        link.points.forEach(p => {
-          buff += p.x
-          buff += p.y
-        })
-    })
-
-    obj[curr.name] = hashCode(buff)
-    return obj
-  }, {})
-}
-
-function updateCurrentHash(state) {
-  return { ...state, currentHashes: computeFlowsHash(state) }
-}
 
 export default reducer
